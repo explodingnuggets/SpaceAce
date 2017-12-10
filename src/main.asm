@@ -1,11 +1,14 @@
-Include .\libs\Irvine32.inc
-Include .\libs\win32.inc
+INCLUDE ..\libs\Irvine32.inc
+INCLUDE ..\libs\win32.inc
 
 COLS = 80
 ROWS = 25
 
 LCOLS = 48
 LROWS = 4
+
+INSCOLS = 39
+INSROWS = 8
 
 GOCOLS = 55
 GOROWS = 4
@@ -25,7 +28,8 @@ GetMatrixAddr PROTO mAddr:DWORD, mCols: DWORD, iRows: DWORD, iCols:DWORD, sType:
 	
 	; Game Data
 	timeDifUp DWORD ?								; Time when game difficulty was last updated
-	gameState BYTE 0								; Game stat; 0 = start, 1 = playing, 2 = end
+	gameState BYTE 0								; Game stat: 0 = start, 1 = playing, 2 = end, 3 = instructions
+	currScore DWORD 0								; Current player's score
 	
 	; Ship Data
 	shipY BYTE 1
@@ -43,17 +47,17 @@ GetMatrixAddr PROTO mAddr:DWORD, mCols: DWORD, iRows: DWORD, iCols:DWORD, sType:
 	bulletLCtr BYTE 0
 	
 	; Ship Literals
-	shipThruster db '<|==]'
-	shipMain db '<|===)'
+	shipThruster db '<|=>'
+	shipMain 	 db '<|==|)'
 	
 	; Bullets Literals
-	bulletsChar db '-O='
+	bulletsChar  db '-O='
 	
 	; Label Literals
-	logo db ' ___  ____   __    ___  ____    __    ___  ____ ',
-			'/ __)(  _ \ /__\  / __)( ___)  /__\  / __)( ___)',
-			'\__ \ )___//(__)\( (__  )__)  /(__)\( (__  )__) ',
-			'(___/(__) (__)(__)\___)(____)(__)(__)\___)(____)'
+	logo 	 db ' ___  ____   __    ___  ____    __    ___  ____ ',
+				'/ __)(  _ \ /__\  / __)( ___)  /__\  / __)( ___)',
+				'\__ \ )___//(__)\( (__  )__)  /(__)\( (__  )__) ',
+				'(___/(__) (__)(__)\___)(____)(__)(__)\___)(____)'
 			
 	gameOver db '  ___    __    __  __  ____    _____  _  _  ____  ____ ',
 				' / __)  /__\  (  \/  )( ___)  (  _  )( \/ )( ___)(  _ \',
@@ -63,14 +67,28 @@ GetMatrixAddr PROTO mAddr:DWORD, mCols: DWORD, iRows: DWORD, iCols:DWORD, sType:
 	; Menu Literals
 	startTxt db 'START'
 	instrTxt db 'INSTRUCTIONS'
-	quitTxt db 'QUIT'
-	mainTxt db 'MAIN MENU'
-	playTxt db 'PLAY AGAIN'
+	quitTxt  db 'QUIT'
+	mainTxt  db 'MAIN MENU'
+	playTxt  db 'PLAY AGAIN'
 	
 	; Top Bar Literals
-	bulletsTxt db 'Bullets'
-
+	bulletsTxt db 'AMMO:'
+	scoreTxt   db 'SCORE:'
+	
+	; Final Score Text
+	finalScoreTxt db 'YOUR FINAL SCORE WAS: '
+	
+	; Instructions Text
+	instructions db 'WELCOME TO SPACEACE!                   ',
+					'SHOOT THE GREEN ALIEN SHIPS TO SCORE!  ',
+					'CONTROLS:                              ',
+					'J: BULLETS - LOW DMG                   ',
+					'K: BOMBS   - MEDIUM DMG                ',
+					'L: LASERS  - HIGH DMG                  ',
+					'W: MOVE THE SHIP UP                    ',
+					'S: MOVE THE SHIP DOWN                  '				
 .code
+
 main PROC
 	Invoke GetStdHandle, STD_OUTPUT_HANDLE
 	mov outHandle, eax
@@ -85,8 +103,8 @@ gameLoop:
 
 	call PrintScreen
 		
-	mov eax, 100
-	call Delay		; wait 100 ms
+	mov eax, 50
+	call Delay		; wait 50 ms
 
 	jmp gameLoop
 	
@@ -131,9 +149,9 @@ PrintScreen PROC
 	je state1
 	cmp gameState, 2
 	je state2
-	
+	cmp gameState, 3
+	je state3
 	call ResetStartScreen
-	
 	jmp writeCons
 state1:
 	call ResetGameScreen
@@ -141,10 +159,13 @@ state1:
 	jmp writeCons
 state2:
 	call ResetEndScreen
-	
+	jmp writeCons
+state3:
+	call ResetInsScreen
 writeCons:
 	Invoke WriteConsoleOutput, outHandle, ADDR scrBuffer, scrSize, scrCoord, ADDR scrRect
-	
+	call UpdateScore
+
 	ret
 PrintScreen ENDP
 
@@ -317,8 +338,8 @@ mainSpace:												; main space has white background and black chars
 	cmp ecx, COLS*ROWS									; for(ecx=COLS; ecx<COLS*ROWS; ecx++) { set_screen_buffer(ecx, white, black) }
 	jne mainSpace
 
-; Render menu text
-; Start label
+; Render game text
+; Ammunition label
 	xor ecx, ecx
 bulletsCopy:
 	push ecx
@@ -330,10 +351,114 @@ bulletsCopy:
 	inc ecx
 	cmp ecx, LENGTHOF bulletsTxt
 	jne bulletsCopy
+
+; Score label
+	xor ecx,ecx
+scoreCopy:
+	push ecx
+	movzx ax, scoreTxt[ecx]
+	add ecx, 30
+	mov scrBuffer[ecx * CHAR_INFO].Char, ax
+	pop ecx
+	
+	inc ecx
+	cmp ecx, LENGTHOF scoreTxt
+	jne scoreCopy
 	
 	ret
 ResetGameScreen ENDP
 
+;======================================================
+;
+ResetInsScreen PROC uses eax ebx ecx edx esi edi
+;======================================================
+; Resets background to empty black
+	xor ecx, ecx
+blackBack:
+	mov scrBuffer[ecx * CHAR_INFO].Char, 0
+	mov scrBuffer[ecx * CHAR_INFO].Attributes, 0Fh
+	
+	inc ecx
+	
+	cmp ecx, LENGTHOF scrBuffer
+	jne blackBack
+
+; Renders instructions text on screen buffer
+	xor ecx, ecx
+	xor edx, edx
+instrCol:
+	Invoke GetMatrixAddr, ADDR instructions, INSCOLS, edx, ecx, TYPE instructions 	; returns logo[edx][ecx] pointer
+	mov esi, eax
+	push ecx
+	push edx
+	add ecx, 22
+	add edx, 7
+	Invoke GetMatrixAddr, ADDR scrBuffer, COLS, edx, ecx, TYPE scrBuffer			; returns scrBuffer[edx][ecx] pointer
+	mov edi, eax
+	pop edx
+	pop ecx
+
+	movzx ax, (BYTE PTR [esi])
+	mov (CHAR_INFO PTR [edi]).Char, ax
+	
+	inc ecx
+	cmp ecx, INSCOLS
+	jne instrCol
+	
+	mov ecx, 0
+	inc edx
+	cmp edx, INSROWS
+	jne instrCol
+	
+; Renders options menu
+; Start label
+	xor ecx, ecx
+startCopy:
+	push ecx
+	movzx ax, startTxt[ecx]
+	add ecx, COLS*20+10
+	mov scrBuffer[ecx * CHAR_INFO].Char, ax
+	pop ecx
+	
+	inc ecx
+	cmp ecx, LENGTHOF startTxt
+	jne startCopy
+	
+; Main Menu label
+	xor ecx, ecx
+mainCopy:
+	push ecx
+	movzx ax, mainTxt[ecx]
+	add ecx, COLS*21+10
+	mov scrBuffer[ecx * CHAR_INFO].Char, ax
+	pop ecx
+	
+	inc ecx
+	cmp ecx, LENGTHOF mainTxt
+	jne mainCopy
+	
+; Quit label
+	xor ecx, ecx
+quitCopy:
+	push ecx
+	movzx ax, quitTxt[ecx]
+	add ecx, COLS*22+10
+	mov scrBuffer[ecx * CHAR_INFO].Char, ax
+	pop ecx
+	
+	inc ecx
+	cmp ecx, LENGTHOF quitTxt
+	jne quitCopy
+
+; Cursor selector
+	movzx eax, cursorPos
+	add eax, 20
+	Invoke GetMatrixAddr, ADDR scrBuffer, COLS, eax, 9, TYPE scrBuffer		; returns scrBuffer[eax][9] pointer
+	
+	mov (CHAR_INFO PTR[eax]).Char, '>'
+	
+	ret
+ResetInsScreen ENDP
 
 ;======================================================
 ;
@@ -343,7 +468,7 @@ UpdateGameScreen PROC uses eax ebx ecx edx
 	xor ecx, ecx
 	xor edx, edx
 
-; Update menu
+; Update upper screen
 	mov scrBuffer[10 * CHAR_INFO].Char, 'J'
 	mov scrBuffer[15 * CHAR_INFO].Char, 'K'
 	mov scrBuffer[20 * CHAR_INFO].Char, 'L'
@@ -356,7 +481,6 @@ UpdateGameScreen PROC uses eax ebx ecx edx
 sRed:
 	mov scrBuffer[10 * CHAR_INFO].Attributes, 0Ch
 sOut:
-
 	cmp bulletMCtr, 0
 	jne mRed
 	
@@ -365,7 +489,6 @@ sOut:
 mRed:
 	mov scrBuffer[15 * CHAR_INFO].Attributes, 0Ch
 mOut:
-
 	cmp bulletLCtr, 0
 	jne lRed
 	
@@ -374,8 +497,7 @@ mOut:
 lRed:
 	mov scrBuffer[20 * CHAR_INFO].Attributes, 0Ch
 lOut:
-	
-; Player ship
+
 	mov eax, COLS
 	mov bl, shipY
 	mul ebx			; eax = COLS * shipY
@@ -384,7 +506,7 @@ lOut:
 topShip:
 	mov dl, shipThruster[ecx]
 	mov scrBuffer[ebx * CHAR_INFO].Char, dx
-	mov scrBuffer[ebx * CHAR_INFO].Attributes, 09h
+	mov scrBuffer[ebx * CHAR_INFO].Attributes, 1Ah
 	
 	inc ebx
 	inc ecx
@@ -397,7 +519,7 @@ topShip:
 midShip:
 	mov dl, shipMain[ecx]
 	mov scrBuffer[ebx * CHAR_INFO].Char, dx
-	mov scrBuffer[ebx * CHAR_INFO].Attributes, 09h
+	mov scrBuffer[ebx * CHAR_INFO].Attributes, 1Ah 
 
 	inc ebx
 	inc ecx
@@ -410,7 +532,7 @@ midShip:
 botShip:
 	mov dl, shipThruster[ecx]
 	mov scrBuffer[ebx * CHAR_INFO].Char, dx
-	mov scrBuffer[ebx * CHAR_INFO].Attributes, 09h
+	mov scrBuffer[ebx * CHAR_INFO].Attributes, 1Ah
 	
 	inc ebx
 	inc ecx
@@ -419,7 +541,7 @@ botShip:
 	
 ; Enemies
 	mov ecx, 0
-enemyPrint:
+updateEnemy:
 	cmp enemiesMatrix[ecx], 0
 	je nextEnemy
 	
@@ -431,7 +553,7 @@ enemyPrint:
 nextEnemy:
 	inc ecx
 	cmp ecx, LENGTHOF enemiesMatrix
-	jne enemyPrint
+	jne updateEnemy
 	
 ; Bullets
 	xor eax, eax
@@ -446,7 +568,7 @@ bulletsPrint:
 	dec al
 	movzx ax, bulletsChar[eax]							; Load the correct char from bulletsChar literal
 	mov scrBuffer[ecx*CHAR_INFO].Char, ax
-	mov scrBuffer[ecx*CHAR_INFO].Attributes, 0Eh
+	mov scrBuffer[ecx*CHAR_INFO].Attributes, 0Ch
 	
 	sub ecx, COLS*2
 	
@@ -457,6 +579,41 @@ nextBullets:
 	
 	ret
 UpdateGameScreen ENDP
+
+;======================================================
+;
+UpdateScore PROC
+;======================================================
+; Updates the score and prints it to console
+	xor edx, edx	
+
+gameScore:
+	cmp gameState, 1
+	jne finalScore
+	
+	mov dl, 35
+	mov bl, LENGTHOF scoreTxt
+	add dl, bl
+	mov dh, 0
+	call gotoXY
+	mov eax, currScore
+	call writeDEC
+
+finalScore:
+	cmp gameState, 2
+	jne noScore
+	
+	mov dl, 30
+	mov bl, LENGTHOF finalScoreTxt
+	add dl, bl
+	mov dh, 14
+	call gotoXY
+	mov eax, currScore
+	call writeDEC
+
+noScore:
+	ret
+UpdateScore ENDP
 
 
 ;======================================================
@@ -500,7 +657,20 @@ gameOverCol:
 	inc edx
 	cmp edx, GOROWS
 	jne gameOverCol
+
+; Renders final score text
+	xor ecx,ecx
+scoreCopy:
+	push ecx
+	movzx ax, finalScoreTxt[ecx]
+	add ecx, COLS*14+25
+	mov scrBuffer[ecx * CHAR_INFO].Char, ax
+	pop ecx
 	
+	inc ecx
+	cmp ecx, LENGTHOF finalScoreTxt
+	jne scoreCopy
+
 ; Renders options menu
 ; Play Again label
 	xor ecx, ecx
@@ -669,6 +839,7 @@ tileLoop:
 	jmp finish
 instaKill:
 	mov al, 0
+	inc currScore
 finish:	
 	mov enemiesMatrix[ecx], al
 	mov bulletsMatrix[ecx], 0
@@ -724,9 +895,9 @@ ReadMenuInput PROC uses eax
 	
 	call ReadKey
 	
-	cmp dx, VK_UP		; up arrow
+	cmp dx, 'W'		; up arrow
 	je cursorUp
-	cmp dx, VK_DOWN 	; down arrow
+	cmp dx, 'S' 	; down arrow
 	je cursorDown
 	cmp dx, VK_RETURN	; return key
 	je optionCh
@@ -752,6 +923,7 @@ cursorDown:
 	mov cursorPos, al
 
 	jmp inputEnd
+	
 optionCh:
 	cmp cursorPos, 2
 	je quitOp
@@ -766,21 +938,23 @@ optionCh:
 insMainOp:
 	mov cursorPos, 0
 	
-	cmp gameState, 2
-	je mainOp
-	
-insOp:
-	
-	jmp outOp
+	cmp gameState, 0
+	je insOp
+
 mainOp:
 	mov gameState, 0
-
 	jmp outOp
+
+insOp:
+	mov gameState, 3
+	jmp outOp
+
 quitOp:
 	exit
+	
 outOp:
-
 	jmp inputEnd
+	
 inputEnd:
 	ret
 ReadMenuInput ENDP
@@ -795,9 +969,9 @@ ReadGameInput PROC uses eax edx
 	
 	call ReadKey
 	
-	cmp dx, VK_UP	; up arrow
+	cmp dx, 'W'	; up arrow
 	je shipUp
-	cmp dx, VK_DOWN	; down arrow
+	cmp dx, 'S'	; down arrow
 	je shipDown
 	cmp dx, 'J'		; j key
 	je shootSmall
